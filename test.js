@@ -1,5 +1,7 @@
 "use strict";
 
+const _ = require('lodash');
+
 const N = (n) => {
     if (n <= 0) return 1;
 
@@ -20,4 +22,4 @@ const C = (m, n) => {
     return parseInt(P(m, n) / P(n, n));
 };
 
-console.log(`${4 *C(10,5)}`);
+console.log(`${_.fill(new Array(5), 0)}`);
