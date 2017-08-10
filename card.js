@@ -1,34 +1,10 @@
 "use strict";
 
 const _ = require('lodash');
+const createSuits = require('./createSuits');
+const global = require('./global');
+const CardSuit = require('./cardSuit');
 
-const TYPES_STR = ['','♠','♥','♣','♦'];
-const NUMBERS_STR = ['','2','3','4','5','6','7','8','9','10','J','Q','K','A'];
-const TYPES = [1,2,3,4];
-const NUMBERS = [4,5,6,7,8,9,10,11,12,13];
-
-//strToValue('♥', 'A')
-const strToValue = (typeStr, numberStr) => {
-    const typeIndex = _.indexOf(TYPES_STR, typeStr);
-    const numberIndex = _.indexOf(NUMBERS_STR, numberStr);
-
-    if (typeIndex === -1 || numberIndex === -1) return -1;
-
-    const typeRealIndex = _.indexOf(TYPES, typeIndex);
-    const numberRealIndex = _.indexOf(NUMBERS, numberIndex);
-
-    if (numberRealIndex === -1) return -1;
-
-    return typeRealIndex * NUMBERS.length + numberRealIndex;
-};
-
-const valueToStr = (v) => {
-    const t = TYPES[parseInt(v / NUMBERS.length)];
-    const n = NUMBERS[parseInt(v % NUMBERS.length)];
-    return `${TYPES_STR[t] + NUMBERS_STR[n]}`;
-};
-
-const MAX_CARDS_NUM = 5;
 let CARD5_TYPE_RESULT_TEMPLATE = [
     0,  //皇家同花顺 0
     0,  //同花顺   1
@@ -44,109 +20,6 @@ let CARD5_TYPE_RESULT_TEMPLATE = [
 
 let seq = 0;
 
-class Card {
-    constructor(v) {
-        this.v = v;
-        this.t = TYPES[parseInt(v / NUMBERS.length)];
-        this.n = NUMBERS[parseInt(v % NUMBERS.length)];
-        this.str = `${TYPES_STR[this.t] + NUMBERS_STR[this.n]}`;
-    }
-}
-class Cards5 {
-    constructor(vArr) {
-        this.cards = [];
-        this.cardsTypes = [];
-        this.cardsNumbers = [];
-
-        // vArr = _.sortBy(vArr);
-        for (const v of vArr) {
-            const card = new Card(v);
-            this.cardsTypes.push(card.t);
-            this.cardsNumbers.push(card.n);
-            this.cards.push(card);
-        }
-    }
-
-    isShun() {
-        const sortedNumber = _.sortBy(this.cardsNumbers);  //TODO: 此算法比较耗时
-        for(let i = 0; i < sortedNumber.length - 1; i++) {
-            if (sortedNumber[i+1] - sortedNumber[i] !== 1) return false;
-        }
-
-        return true;
-    }
-
-    checkResult() {
-        if (this.result !== undefined) return this.result;
-
-        const numberCounts = _.countBy(this.cardsNumbers);
-        const numberCountsKeys = _.keys(numberCounts);
-
-        if (numberCountsKeys.length === 2) {
-            const t = _.values(numberCounts)[0];
-            if (t === 2 || t === 3) {
-                //葫芦
-                this.result = 3;
-            }
-            else {
-                //金刚
-                this.result = 2;
-            }
-        }
-        else if (numberCountsKeys.length === 3) {
-            if (_.indexOf(_.values(numberCounts), 3) !== -1) {
-                //三条
-                this.result = 6;
-            }
-            else {
-                //两对
-                this.result = 7;
-            }
-        }
-        else if (numberCountsKeys.length === 4) {
-            this.result = 8;
-        }
-        else {
-            if (_.uniq(this.cardsTypes).length === 1) {
-                if (this.isShun()) {
-                    if (_.indexOf(this.cardsNumbers, NUMBERS[NUMBERS.length - 1]) !== -1) {
-                        //皇家同花顺
-                        this.result = 0;
-                    }
-                    else {
-                        //同花顺
-                        this.result = 1;
-                    }
-                }
-                else {
-                    //同花
-                    this.result = 4;
-                }
-            }
-            else if (this.isShun()){
-                //顺子
-                this.result = 5;
-            }
-            else {
-                //高牌
-                this.result = 9;
-            }
-        }
-
-        // this.display();
-        return this.result;
-    }
-
-    display() {
-        let s = "";
-        for (const c of this.cards)
-        {
-            s += c.str + ',';
-        }
-        console.log(`${s}`);
-    }
-}
-
 class SeekCardTask {
     constructor(task) {
         if (task instanceof SeekCardTask){
@@ -158,7 +31,7 @@ class SeekCardTask {
             this.setToken = task.setToken;
         }
         else {
-            this.cardValues = _.fill(new Array(MAX_CARDS_NUM), SeekCardTask.INVALID_VALUE);
+            this.cardValues = _.fill(new Array(global.MAX_CARDS_NUM), SeekCardTask.INVALID_VALUE);
             this.ignores = [];
             this.setToken = 0;
         }
@@ -166,13 +39,8 @@ class SeekCardTask {
         this.seeking = false;
     }
 
-    setCardsValue(cardValues, poses) {
-        if (cardValues.length !== poses.length) return undefined;
-
-        cardValues = _.sortBy(cardValues);
-        poses = _.sortBy(poses);
-        this.cardValues = _.fill(new Array(MAX_CARDS_NUM), SeekCardTask.INVALID_VALUE);
-        this.setToken = 0;
+    setCardsValue(cardValues) {
+        if (cardValues.length !== global.MAX_CARDS_NUM) return undefined;
         this.seeking = false;
 
         const initFunc = () => {
@@ -180,18 +48,16 @@ class SeekCardTask {
             return undefined;
         };
 
-        for (const pos of poses) {
-            if (pos < 0 || pos >= MAX_CARDS_NUM) continue;
+        for (let i = 0; i < cardValues.length; ++i) {
+            const v = cardValues[i];
+            if ((v < 0 || v >= global.TYPES.length * global.NUMBERS.length)
+                && v !== SeekCardTask.INVALID_VALUE) return initFunc();
 
-            const v = _.first(cardValues);
-            if (v < 0 || v >= TYPES.length * NUMBERS.length) return initFunc();
-
-            this.setCardAtPos(_.first(cardValues), pos);
-            cardValues = _.drop(cardValues);
+            this.setCardAtPos(v, i);
         }
 
         //检查是否有效
-        for (let pos = 0 ; pos < MAX_CARDS_NUM; pos++) {
+        for (let pos = 0 ; pos < global.MAX_CARDS_NUM; pos++) {
             if (SeekCardTask.INVALID_VALUE !== this.cardValues[pos]) continue;
             if (undefined === this.seekRange(pos)) {
                 return initFunc();
@@ -207,7 +73,7 @@ class SeekCardTask {
     }
 
     setExistCard(pos, value) {
-        if (pos >= MAX_CARDS_NUM || pos < 0) return undefined;
+        if (pos >= global.MAX_CARDS_NUM || pos < 0) return undefined;
         this.setCardAtPos(value, pos);
 
         if (this.setToken !== SeekCardTask.FULL_SETED_TOKEN) return SeekCardTask.CONTINUE_NEW_TASK;
@@ -218,14 +84,14 @@ class SeekCardTask {
     }
 
     calcResult() {
-        const cards5 = new Cards5(this.cardValues);
+        const cards5 = new CardSuit(this.cardValues);
         if (this.cards !== undefined) this.cards.push(cards5);
         if (this.points !== undefined) this.points[cards5.checkResult()]++;
         return cards5;
     }
 
     seekRange(pos) {
-        if (pos >= MAX_CARDS_NUM || pos < 0
+        if (pos >= global.MAX_CARDS_NUM || pos < 0
             || this.cardValues[pos] !== SeekCardTask.INVALID_VALUE) return undefined;
 
         //from
@@ -237,8 +103,8 @@ class SeekCardTask {
         }
 
         //to
-        let to = TYPES.length * NUMBERS.length - 1;
-        for (let i = pos + 1; i < MAX_CARDS_NUM; i++) {
+        let to = global.TYPES.length * global.NUMBERS.length - 1;
+        for (let i = pos + 1; i < global.MAX_CARDS_NUM; i++) {
             if (this.cardValues[i] === SeekCardTask.INVALID_VALUE) continue;
             to = this.cardValues[i] - 1 - ( i - pos - 1);
             break;
@@ -283,6 +149,7 @@ class SeekCardTask {
     }
 
     run() {
+
         if (this.setToken === SeekCardTask.FULL_SETED_TOKEN) return this.calcResult();
 
         this.begin();
@@ -301,26 +168,26 @@ class SeekCardTask {
 SeekCardTask.INVALID_VALUE = -1;
 SeekCardTask.CONTINUE_NEW_TASK = 1;
 SeekCardTask.CONTINUE_NEXT = 2;
-SeekCardTask.FULL_SETED_TOKEN = parseInt(_.repeat('1', MAX_CARDS_NUM), 2);
+SeekCardTask.FULL_SETED_TOKEN = parseInt(_.repeat('1', global.MAX_CARDS_NUM), 2);
+
+const test = (exists, anyCount) => {
+    CardSuit.getConfigs.then(() => {
+        const task = new SeekCardTask();
+        // const suits = createSuits([1,2,3,4,5,6,7], 5);
+        // for (const {cards, suit} of suits) {
+        //     task.cards = [];
+        //     console.log(`${cards} / ${task.setCardsValue(suit)}`);
+        //     task.run();
+        //     console.log(`${task.cards.length}`);
+        // }
+        task.cards = [];
+        task.points = _.clone(CARD5_TYPE_RESULT_TEMPLATE);
+        task.run();
+        console.log(`task over: ${task.cards.length}`);
+        CardSuit.saveData();
+    });
+};
+test();
 
 
-const task = new SeekCardTask();
-// task.cards = [];
-// task.ignores = [strToValue('♠', 'A')];
-task.points = _.clone(CARD5_TYPE_RESULT_TEMPLATE);
 
-// console.log(`${task.setCardsValue([strToValue('♠', 'A'), strToValue('♥', 'A')], [0,1])}`);
-// console.log(`${valueToStr(1)}`);
-// console.log(`${task.setCardsValue([5,4,3,2,1], [4,3,2,1,0])}`);
-console.log(`${task.setCardsValue([5,4,3,2,10], [4,0,3,2,1])}`);
-
-const beginTime = _.now();
-task.run();
-console.log(`Used Ms: ${_.now() - beginTime}`);
-console.log(`${task.points}`);
-
-// for (const card of task.cards) {
-//     card.display();
-// }
-
-console.log(`${seq}`);

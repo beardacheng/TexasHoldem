@@ -1,6 +1,7 @@
 "use strict";
 
 const _ = require('lodash');
+const fs = require('fs');
 
 const N = (n) => {
     if (n <= 0) return 1;
@@ -15,11 +16,23 @@ const N = (n) => {
 };
 
 const P = (m, n) => {
-    return parseInt(N(m) / N(m - n));
+    if (m < n) return 1;
+
+    let r = 1;
+    let i = m;
+    while (i >= (m - n + 1)) {
+        r *= i;
+        i--;
+    }
+
+    return r;
 };
 
 const C = (m, n) => {
     return parseInt(P(m, n) / P(n, n));
 };
 
-console.log(`${_.fill(new Array(5), 0)}`);
+// console.log(`${C(3,1) + C(3,2) + C(3,3)}`);
+console.log(`${Date.now()}`);
+
+
