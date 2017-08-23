@@ -32,7 +32,8 @@ const C = (m, n) => {
     return parseInt(P(m, n) / P(n, n));
 };
 
-// console.log(`${C(3,1) + C(3,2) + C(3,3)}`);
-console.log(`${Date.now()}`);
+console.log(`${C(40,2) * C(38,5) *  C(33,4) * C(4, 2)}`);
+
+
 
 

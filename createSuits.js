@@ -48,7 +48,10 @@ const fillWithAny = function*(exists, maxAnyCount) {
 
 const createSuits = (exists, maxAnyCount) => {
     let result = [];
-    // if (maxAnyCount >= global.MAX_CARDS_NUM) result.push(_.fill(new Array(global.MAX_CARDS_NUM), -1));
+    if (maxAnyCount >= global.MAX_CARDS_NUM) {
+        result.push(_.fill(new Array(global.MAX_CARDS_NUM), -1));
+        return result;
+    }
 
     const it = pick(exists, []);
     while (true) {
@@ -60,12 +63,13 @@ const createSuits = (exists, maxAnyCount) => {
         while (true) {
             const ret = it2.next();
             if (ret.done === true) break;
-            // console.log(`${ret.value}`);
+            //console.log(`${ret.value}`);
             result.push({cards: cards, suit : _.clone(ret.value)});
         }
     }
     return result;
 };
+
 
 // console.log(`${JSON.stringify(createSuits([1,2,3,4,5,6,7,8], 2, 5))}`);
 module.exports = createSuits;

@@ -4,19 +4,7 @@ const _ = require('lodash');
 const createSuits = require('./createSuits');
 const global = require('./global');
 const CardSuit = require('./cardSuit');
-
-let CARD5_TYPE_RESULT_TEMPLATE = [
-    0,  //皇家同花顺 0
-    0,  //同花顺   1
-    0,  //四条    2
-    0,  //葫芦    3
-    0,  //同花    4
-    0,  //顺子    5
-    0,  //三条    6
-    0,  //两对    7
-    0,  //对子    8
-    0,  //高牌    9
-];
+const pickCards = require('./pickCards');
 
 let seq = 0;
 
@@ -29,11 +17,14 @@ class SeekCardTask {
             this.cards = task.cards;
             this.points = task.points;
             this.setToken = task.setToken;
+            this.maxCard = task.maxCard;
+            this.addedValues = _.clone(task.addedValues);
         }
         else {
             this.cardValues = _.fill(new Array(global.MAX_CARDS_NUM), SeekCardTask.INVALID_VALUE);
             this.ignores = [];
             this.setToken = 0;
+            this.addedValues = [];
         }
 
         this.seeking = false;
@@ -42,9 +33,11 @@ class SeekCardTask {
     setCardsValue(cardValues) {
         if (cardValues.length !== global.MAX_CARDS_NUM) return undefined;
         this.seeking = false;
+        this.cardValues = _.fill(new Array(global.MAX_CARDS_NUM), SeekCardTask.INVALID_VALUE);
+        this.setToken = 0;
 
         const initFunc = () => {
-            this.setCardsValue([], []);
+            this.setCardsValue([]);
             return undefined;
         };
 
@@ -64,30 +57,55 @@ class SeekCardTask {
             }
          }
 
+         // console.log(`set value ${global.valueToStr5(this.cardValues)}`);
+
         return _.clone(this.cardValues);
     }
 
     setCardAtPos(value, pos) {
         this.cardValues[pos] = value;
-        this.setToken |= 1 << pos;
+        if (value !== SeekCardTask.INVALID_VALUE) this.setToken |= 1 << pos;
     }
+
+    getCardResult(addedValue) {
+        addedValue = (addedValue !== undefined ?  _.clone(addedValue) : []);
+        return {
+            values : _.clone(this.cardValues),
+            compareValue : this.calcResult(),
+            cards : global.valueToStr5(this.cardValues),
+            addedValue : addedValue,
+            addedCards : global.valueToStr5(addedValue),
+        };
+    };
 
     setExistCard(pos, value) {
         if (pos >= global.MAX_CARDS_NUM || pos < 0) return undefined;
+
+        if (this.cardValues[pos] !== SeekCardTask.INVALID_VALUE) {
+            _.pull(this.addedValues, this.cardValues[pos]);
+        }
+        this.addedValues.push(value);
+        // console.log(`added ${this.addedValues}`);
+
         this.setCardAtPos(value, pos);
 
-        if (this.setToken !== SeekCardTask.FULL_SETED_TOKEN) return SeekCardTask.CONTINUE_NEW_TASK;
+        if (this.setToken !== SeekCardTask.FULL_SETED_TOKEN) {
+            return SeekCardTask.CONTINUE_NEW_TASK;
+        }
 
-        // console.log(`${this.cardValues}`);
+        if (this.maxCard === undefined) {
+            this.maxCard = this.getCardResult(this.addedValues);
+        } else {
+            const nowCard = this.getCardResult(this.addedValues);
+            if (nowCard.compareValue < this.maxCard.compareValue) this.maxCard = nowCard;
+        }
 
-        return this.calcResult();
+        return this.maxCard;
     }
 
     calcResult() {
         const cards5 = new CardSuit(this.cardValues);
-        if (this.cards !== undefined) this.cards.push(cards5);
-        if (this.points !== undefined) this.points[cards5.checkResult()]++;
-        return cards5;
+        return cards5.checkResult();
     }
 
     seekRange(pos) {
@@ -133,12 +151,13 @@ class SeekCardTask {
 
         this.lastCheck = SeekCardTask.INVALID_VALUE;
         this.seeking = true;
+        this.maxCard = undefined;
     }
 
     next() {
-        if (!this.seeking) return undefined;
+        if (!this.seeking) return this.maxCard;
         else if (this.lastCheck === SeekCardTask.INVALID_VALUE) this.lastCheck = this.cardRange.from;
-        else if (this.lastCheck >= this.cardRange.to) {this.seeking = false; return undefined;}
+        else if (this.lastCheck >= this.cardRange.to) {this.seeking = false; return this.maxCard;}
         else this.lastCheck++;
 
         if (_.indexOf(this.ignores, this.lastCheck) !== -1) return this.next();
@@ -146,22 +165,26 @@ class SeekCardTask {
         const ret = this.setExistCard(this.cardPos, this.lastCheck);
         if (ret === SeekCardTask.CONTINUE_NEW_TASK) return ret;
         else if (this.lastCheck < this.cardRange.to) return SeekCardTask.CONTINUE_NEXT;
+        else return ret;
     }
 
     run() {
-
-        if (this.setToken === SeekCardTask.FULL_SETED_TOKEN) return this.calcResult();
+        if (this.setToken === SeekCardTask.FULL_SETED_TOKEN) {
+            return this.getCardResult();
+        }
 
         this.begin();
         while(true) {
             const ret = this.next();
             if (ret === SeekCardTask.CONTINUE_NEW_TASK) {
                 const newTask = new SeekCardTask(this);
-                newTask.run();
+                this.maxCard = newTask.run();
             }
             else if (ret === SeekCardTask.CONTINUE_NEXT) {}
             else break;
         }
+
+        return this.maxCard;
     }
 }
 
@@ -170,22 +193,94 @@ SeekCardTask.CONTINUE_NEW_TASK = 1;
 SeekCardTask.CONTINUE_NEXT = 2;
 SeekCardTask.FULL_SETED_TOKEN = parseInt(_.repeat('1', global.MAX_CARDS_NUM), 2);
 
-const test = (exists, anyCount) => {
-    CardSuit.getConfigs.then(() => {
-        const task = new SeekCardTask();
-        // const suits = createSuits([1,2,3,4,5,6,7], 5);
-        // for (const {cards, suit} of suits) {
-        //     task.cards = [];
-        //     console.log(`${cards} / ${task.setCardsValue(suit)}`);
-        //     task.run();
-        //     console.log(`${task.cards.length}`);
-        // }
-        task.cards = [];
-        task.points = _.clone(CARD5_TYPE_RESULT_TEMPLATE);
-        task.run();
-        console.log(`task over: ${task.cards.length}`);
-        CardSuit.saveData();
-    });
+const getSuitCompareValue = (suit) => {
+    if (suit.length > global.MAX_CARDS_NUM) {
+        const suits = [];
+        const suitsIt = pickCards(suit, global.MAX_CARDS_NUM);
+        while(true) {
+            const newSuit = suitsIt.next();
+            if (newSuit.done === true) break;
+            suits.push(newSuit.value.picked);
+        }
+        return getSuitsMaxValue(suits);
+    }
+
+    const task = new SeekCardTask();
+    if (task.setCardsValue(suit) === undefined) return undefined;
+    else {
+        return task.run();
+    }
+};
+
+const getSuitsMaxValue = (suits) => {
+    let maxValue = null;
+    for (const suit of suits) {
+        const tmp = getSuitCompareValue(suit);
+        if (tmp === undefined) continue;
+        else if (maxValue === null) maxValue = tmp;
+        else if (maxValue.compareValue > tmp.compareValue) maxValue = tmp;
+    }
+
+    if (maxValue === null) return undefined;
+    return maxValue;
+};
+
+const test = () => {
+    const fullCards = [];
+    for (let i = 0; i < global.TYPES.length * global.NUMBERS.length; ++i) {
+        fullCards.push(i);
+    }
+
+    const myCards = [global.strToValue('♥', 'A'), global.strToValue('♠', 'A')];
+    _.pull(fullCards, global.strToValue('♥', 'A'));
+    _.pull(fullCards, global.strToValue('♠', 'A'));
+
+    const pickCardsIt = pickCards(fullCards, global.MAX_CARDS_NUM);
+    while (true) {
+        const pickCardsSuitStat = pickCardsIt.next();
+        if (pickCardsSuitStat.done === true) break;
+
+        const pickCardsSuit = pickCardsSuitStat.value;
+        const picked5 = pickCardsSuit.picked;
+
+        const othersMinValue = getSuitCompareValue(picked5);
+        if (othersMinValue === undefined) continue;
+        const remainCards = pickCardsSuit.remains;
+
+        const myMaxValue = getSuitCompareValue(_.concat(myCards, picked5));
+        if (myMaxValue === undefined) continue;
+
+        let resultScore = {win:0, loss:0, draw:0};
+
+        const otherPick2It = pickCards(remainCards, 2);
+        while (true) {
+            const otherPick2 = otherPick2It.next();
+            if (otherPick2.done === true) break;
+
+            let otherSuitValue = getSuitCompareValue(_.concat(otherPick2.value.picked, picked5));
+            if (otherSuitValue.compareValue > othersMinValue.compareValue) otherSuitValue = othersMinValue;
+
+            let str = `5 is ${global.valueToStr5(picked5)} picked ${global.valueToStr5(otherPick2.value.picked)} compare: ${myMaxValue.cards} ${otherSuitValue.cards} `;
+
+            if (myMaxValue.compareValue < otherSuitValue.compareValue) {
+                resultScore.win++;
+                str += 'win';
+            }
+            else if (myMaxValue.compareValue > otherSuitValue.compareValue) {
+                resultScore.loss++;
+                str += 'loss';
+            }
+            else {
+                resultScore.draw++;
+                str += 'draw';
+            }
+
+            // console.log(`${str}`);
+        }
+
+        console.log(`5 is ${global.valueToStr5(picked5)} result is ${JSON.stringify(resultScore)}`);
+    }
+
 };
 test();
 

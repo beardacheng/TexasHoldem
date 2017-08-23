@@ -4,11 +4,23 @@ const global = require('./global');
 const _ = require('lodash');
 const fs = require('fs');
 const redis = require('redis');
-const cluster = require('cluster');
 const SeqTokenData = require('./sortResultTool');
 
-let ALL_SUITS_INFO = {}; //key: v1_v2_v3_v4_v5, {type : id}
-let DIRTY_SUITS_INFO_KEYS = [];
+let ALL_SUITS_INFO = {};
+let SUITS_VALUE = null;
+
+const numberSortBuff = {};
+const findInNumberSortBuff = (value) => {
+    const key = value.toString();
+    let r = numberSortBuff[key];
+
+    if (r !== undefined) return r;
+    else {
+        r =  _.sortBy(value);
+        numberSortBuff[key] = r;
+        return r;
+    }
+};
 
 class Card {
     constructor(v) {
@@ -40,17 +52,38 @@ class CardSuit {
     }
 
     isShun() {
-        const sortedNumber = _.sortBy(this.cardsNumbers);  //TODO: 此算法比较耗时；增加A2345的判断
-        for(let i = 0; i < sortedNumber.length - 1; i++) {
-            if (sortedNumber[i+1] - sortedNumber[i] !== 1) return false;
-        }
+        const sortedNumber = findInNumberSortBuff(this.cardsNumbers);
 
-        return true;
+        const compareShun = (cardValues) => {
+            for(let i = 0; i < cardValues.length - 1; i++) {
+                if (cardValues[i+1] - cardValues[i] !== 1) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        //A2345
+        const ret = compareShun(sortedNumber);
+        if (ret === false && (_.last(sortedNumber) === 14 && _.first(sortedNumber) === 2)) {
+            return compareShun(_.initial(sortedNumber));
+        }
+        else return ret;
     }
 
     checkResult() {
+        if (SUITS_VALUE === null) {
+            SUITS_VALUE = {};
+            let results = fs.readFileSync('./COMPARE_5_A.data').toString();
+            results = JSON.parse(results);
+            for (const line of results) {
+                const key = findInNumberSortBuff(line.n).toString() + '_' + line.t;
+                SUITS_VALUE[key] = line.v;
+            }
+        }
+
         if (this.result !== undefined) return this.result;
-        else if (ALL_SUITS_INFO[this.suitKey] !== undefined) return ALL_SUITS_INFO[this.suitKey].type;
+        else if (ALL_SUITS_INFO[this.suitKey] !== undefined) return ALL_SUITS_INFO[this.suitKey].compareValue;
 
         const numberCounts = _.countBy(this.cardsNumbers);
         const numberCountsKeys = _.keys(numberCounts);
@@ -82,7 +115,8 @@ class CardSuit {
         else {
             if (_.uniq(this.cardsTypes).length === 1) {
                 if (this.isShun()) {
-                    if (_.indexOf(this.cardsNumbers, global.NUMBERS[global.NUMBERS.length - 1]) !== -1) {
+                    if (_.indexOf(this.cardsNumbers, global.NUMBERS[global.NUMBERS.length - 1]) !== -1
+                        && _.indexOf(this.cardsNumbers, global.NUMBERS[global.NUMBERS.length - 2]) !== -1) {
                         //皇家同花顺
                         this.result = 0;
                     }
@@ -106,24 +140,32 @@ class CardSuit {
             }
         }
 
+        const compareKey = findInNumberSortBuff(this.cardsNumbers).toString() + '_' + this.result;
+        this.compareValue = SUITS_VALUE[compareKey];
+
         // this.display();
         if (ALL_SUITS_INFO[this.suitKey] === undefined) {
             this.addToSuitInfo();
         }
 
-        return this.result;
+        return this.compareValue;
     }
 
     addToSuitInfo() {
-        const v = {
+        ALL_SUITS_INFO[this.suitKey] = {
             'key' : this.suitKey,
             'type' : this.result,
             'cards' : _.map(this.cardsValue, global.valueToStr),
             'types' : this.cardsTypes,
             'numbers' : this.cardsNumbers,
+            'compareValue' : this.compareValue,
         };
-        ALL_SUITS_INFO[this.suitKey] = v;
-        DIRTY_SUITS_INFO_KEYS.push(this.suitKey);
+
+        // const key = findInNumberSortBuff(this.cardsNumbers).toString() + '_' + this.result;
+        //
+        // if (ALL_SUITS_INFO[key] === undefined) {
+        //     ALL_SUITS_INFO[key] = v;
+        // }
     }
 
     display() {
@@ -132,88 +174,13 @@ class CardSuit {
         {
             s += c.str + ',';
         }
-        console.log(`${s}`);
+        console.log(`${s} value is ${this.compareValue}`);
     }
 }
 
-CardSuit.redisClient = redis.createClient();
-CardSuit.getConfigs = new Promise((resolve, error) => {
-    const redisClient = CardSuit.redisClient;
-    let data = {};
-    redisClient.smembers('ALL_SUITS_INFO_KEYS', (err, replies) => {
-        const resultLen = replies.length;
-        let nowAdded = 0;
-        console.log(`total = ${resultLen}`);
-
-        if (resultLen > 0) {
-            let VALUE_KEYS = ['key', 'type', 'cards', 'types', 'numbers'];
-            const nextReply = function*() {
-                for (const reply of replies) {
-                    yield reply;
-                }
-            }();
-
-            let loadingCount = 0;
-            const getValue = () => {
-                let keys = [];
-                const KEY_COUNT_PER_TIME = 20;
-
-                while (keys.length < KEY_COUNT_PER_TIME) {
-                    const it = nextReply.next();
-                    if (it.done === true) break;
-
-                    keys.push(it.value);
-                }
-
-                if (keys.length === 0) return;
-
-                const redisMulti = redisClient.multi();
-
-                for (const key of keys) {
-                    for (const valueKey of VALUE_KEYS) {
-                        redisMulti.hget('ALL_SUITS_INFO_VALUES', key + '_' + valueKey);
-                    }
-                }
-
-                redisMulti.exec((err, results) => {
-                    for (let i = 0; i < keys.length; ++i) {
-                        let value = {};
-                        for (let j = 0; j < VALUE_KEYS.length; ++j) {
-                            value[VALUE_KEYS[j]] = JSON.parse(results[i * VALUE_KEYS.length + j]);
-                        }
-                        data[keys[i]] = value;
-                        nowAdded++;
-                        if (nowAdded % 10000 === 0) {
-                            if (CardSuit.SHOW_LOG === true) console.log(`${nowAdded}`);
-                        }
-                    }
-
-                    if (nowAdded === resultLen) {
-                        redisClient.quit();
-                        resolve(data);
-                    } else {
-                        if (keys.length === KEY_COUNT_PER_TIME) getValue();
-                    }
-                });
-                loadingCount++;
-            };
-            getValue();
-        }
-        else {
-            resolve({});
-        }
-    });
-}).then((v) => {
-    ALL_SUITS_INFO = v;
-});
+CardSuit.redisClient = null;
 
 CardSuit.saveData = () => {
-    if (DIRTY_SUITS_INFO_KEYS.length === 0) {
-        CardSuit.sortResult();
-        CardSuit.redisClient.quit();
-        return;
-    }
-
     const redisMulti = CardSuit.redisClient.multi();
 
     let i = 0;
@@ -229,60 +196,39 @@ CardSuit.saveData = () => {
         }
     }
 
-    DIRTY_SUITS_INFO_KEYS = _.drop(DIRTY_SUITS_INFO_KEYS, i);
     redisMulti.exec((err, result) => {
         console.log(`saveData remain count ${DIRTY_SUITS_INFO_KEYS.length}`);
         CardSuit.saveData();
     });
 };
 
-const numberSortBuff = {};
-const findInNumberSortBuff = (value) => {
-    const key = value.toString();
-    let r = numberSortBuff[key];
-
-    if (r !== undefined) return r;
-    else {
-        r =  _.sortBy(value);
-        numberSortBuff[key] = r;
-        return r;
-    }
+const sortResultCache = {};
+let SORTED_ALL_SUITS_INFO = {
 };
 
-CardSuit.SHOW_LOG = true;
 CardSuit.sortResult = () => {
     let addedCount = 0;
     const allValues =  _.values(ALL_SUITS_INFO);
     let now = Date.now();
     for (let v of allValues) {
+        const cardToken = findInNumberSortBuff(v.numbers).toString() + '_' + v.type;
+        let recorder = sortResultCache[cardToken];
 
-        let inserted = false;
+        if (recorder !== undefined) {
+            recorder.types.push(v.types);
+            recorder.numbers.push(v.numbers);
+        } else {
+            const sortedKey = v.type;
+            if (SORTED_ALL_SUITS_INFO[sortedKey] === undefined) SORTED_ALL_SUITS_INFO[sortedKey] = new SeqTokenData(compareCard);
 
-        const getSortedKey = (value) => {
-            switch (value.type) {
-                case 0:
-                case 1:
-                case 2:
-                case 3:
-                case 4:
-                case 5:
-                case 6:
-                case 7:
-                    return `${value.type}`;
-                case 8:
-                    return `${value.type}_${_.invert(_.countBy(value.numbers))['2']}`;
-                case 9:
-                    return `${value.type}_${_.max(value.numbers)}`;
-                default:
-                    console.log(`ERROR`);
-            }
-        };
-
-        const sortedKey = getSortedKey(v);
-        if (SORTED_ALL_SUITS_INFO[sortedKey] === undefined) SORTED_ALL_SUITS_INFO[sortedKey] = new SeqTokenData(compareCard);
-
-        let sortedData = SORTED_ALL_SUITS_INFO[sortedKey];
-        sortedData.addData(v);
+            let sortedData = SORTED_ALL_SUITS_INFO[sortedKey];
+            sortedData.addData(v);
+            recorder = {};
+            recorder.first = v;
+            recorder.types = [v.types];
+            recorder.numbers = [v.numbers];
+            sortResultCache[cardToken] = recorder;
+        }
 
         addedCount++;
 
@@ -306,6 +252,33 @@ CardSuit.sortResult = () => {
             console.log(`${addedCount} use ${Date.now() - now}`);
             now = Date.now();
         }
+    }
+
+    let value = 1;
+    let compareData = [];
+    for (let i = 0; ; ++i) {
+        const seqTokenData = SORTED_ALL_SUITS_INFO[i];
+        if (seqTokenData === undefined) break;
+
+        let data = seqTokenData.head;
+
+        while (true) {
+            const token = findInNumberSortBuff(data.value.numbers).toString() + '_' + data.value.type;
+            const result = sortResultCache[token];
+
+            compareData.push({
+                n : result.first.numbers,
+                t : result.first.type,
+                v : value,
+            });
+
+            value++;
+
+            if (data.next === null) break;
+            else data = data.next;
+        }
+
+        fs.writeFileSync('./COMPARE_2_A.data', JSON.stringify(compareData));
     }
 };
 
@@ -374,7 +347,7 @@ const compareCard = function(a,b) {
                     data = data.next;
                 }
 
-                console.log(`existCheck size is ${_.size(existCheck)}, seqData count is ${seqData.count}`);
+                // console.log(`existCheck size is ${_.size(existCheck)}, seqData count is ${seqData.count}`);
             };
 
             if (existCheck[keyA] === undefined) {
@@ -426,8 +399,16 @@ const compareCard = function(a,b) {
             case 0:
                 return 0;
             case 1:
-            case 5:
-                return compare(_.max(a.numbers), _.max(b.numbers)); //TODO:考虑A2345
+            case 5: {
+                const maxCardNumber = (cardNumbers) => {
+                    const sortedNumbers = findInNumberSortBuff(cardNumbers);
+
+                    if (_.last(sortedNumbers) === 14 && _.first(sortedNumbers) === 2) return sortedNumbers[sortedNumbers.length - 2];
+                    else return _.last(sortedNumbers);
+                };
+
+                return compare(maxCardNumber(a.numbers), maxCardNumber(b.numbers));
+            }
             case 2:
             case 3:{
                 const aCon = getNumberAndCount(a.numbers);
@@ -439,7 +420,7 @@ const compareCard = function(a,b) {
             case 6:{
                 const aCon = getNumberAndCount(a.numbers);
                 const bCon = getNumberAndCount(b.numbers);
-                ret = compare(aCon[1].number, bCon[1].number);
+                ret = compare(aCon[2].number, bCon[2].number);
                 if (ret !== 0) return ret;
                 return compareByNumber([aCon[0].number, aCon[1].number], [bCon[0].number, bCon[1].number]);
             }
@@ -466,35 +447,5 @@ const compareCard = function(a,b) {
     };
 }();
 
-let SORTED_ALL_SUITS_INFO = {
-};
-
-
-process.on('SIGINT', () => {
-    console.log(`recv signal SIGINT`);
-    CardSuit.SHOW_LOG = false;
-    const readline = require('readline');
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
-    const quest = () => {
-        rl.question('input key: ', (key) => {
-            if (key.length === 0) {
-                CardSuit.SHOW_LOG = true;
-                return;
-            }
-
-            console.log(`key = ${key}`);
-            quest();
-        });
-    };
-    quest();
-});
-
-process.on('exit', () => {
-    console.log(`exit begin`);
-});
 
 module.exports = CardSuit;
